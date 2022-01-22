@@ -1,12 +1,17 @@
-#!/usr/bin/env python3
-
+from cgitb import text
 import queue
+from random import seed
 import serial
 import serial.tools.list_ports
 from signal import signal, SIGINT
 import sys
 import threading
 import time
+import tkinter
+from tkinter import END, W, PhotoImage, filedialog as fd, scrolledtext as sd
+
+global fw_filename
+fw_filename = ""
 
 COM_OVERRIDE=None
 VERSION='1.0'
@@ -14,13 +19,21 @@ VERSION='1.0'
 DEBUG=False
 running = True
 
+class PrintLogger():
+    def __init__(self, textbox):
+        self.textbox = textbox
+    def write(self, text):
+        self.textbox.insert(tkinter.END, text)
+        self.textbox.see(END)
+
+    def flush(self):
+        pass
+
 def on_closing():
     global running
     running = False
-    print('Quitting')
 
 def sig_handler(signal_received, frame):
-    print('Got SIGINT')
     on_closing()
 
 class Tink:
@@ -123,6 +136,8 @@ class Tink:
                         print('Update complete, booting firmware')
                         self.bl_state = self.blfsm['BlJump']
                         self.tx_packet(self.cmd['JumpApp'])
+                        button_state()
+                        return
                         # There doesnt seem to be a response to the JumpApp
                         # command, so at this point we're done.
                         self.running = False
@@ -199,8 +214,12 @@ class Tink:
                 self.serial.flush()
             except:
                 print('TX failure')
+                button_state()
+                return
         else:
             print('TX failure, serial port not writeable')
+            button_state()
+            return
 
     def tx_packet(self, b):
         # b should be a bytearray
@@ -226,42 +245,65 @@ class Tink:
         self.hex_line = 0
 
         # Ensure the file exists, has valid Intel Hex checksums, and count lines
-        with open(self.fw_name) as fw_file:
-            for line in fw_file:
-                self.hex_nline = self.hex_nline + 1
-                line = line.rstrip()[1:]
-                checksum = bytes.fromhex(line[-2:])
-                data = bytes.fromhex(line[:-2])
-                s = bytes([((~(sum(data) & 0xFF) & 0xFF) + 1) & 0xFF])
-                
-                if checksum != s:
-                    print('%s is not a valid hex file, exiting' % sys.argv[1])
-                    sys.exit(-1)
+        try:
+            with open(self.fw_name) as fw_file:
+                for line in fw_file:
+                    self.hex_nline = self.hex_nline + 1
+                    line = line.rstrip()[1:]
+                    try:
+                        checksum = bytes.fromhex(line[-2:])
+                    except:
+                        print('%s is not a valid hex file' % fw_name)
+                        button_state()
+                        return
+                    # It seems to just load hex if it's blank
+                    data = bytes.fromhex(line[:-2])
+                    s = bytes([((~(sum(data) & 0xFF) & 0xFF) + 1) & 0xFF])
+                    
+                    if checksum != s:
+                        print('%s is not a valid hex file' % fw_name)
+                        button_state()
+                        return
+        except:
+            print('No file selected')
+            button_state()
+            return
 
         comports = []
-        if port == None:
-            comports_all = [comport for comport in serial.tools.list_ports.comports()]
-            for com in comports_all:
-                if com.manufacturer == 'FTDI':
-                    comports.append(com.device)
-        else:
-            comports.append(port)
+        try:
+            if port == None:
+                comports_all = [comport for comport in serial.tools.list_ports.comports()]
+                for com in comports_all:
+                    if com.manufacturer == 'FTDI':
+                        comports.append(com.device)
+            else:
+                comports.append(port)
 
-        if comports:
-            if len(comports) > 1:
-                print('Several FTDI devices detected - not sure which to target. Aborting.')
-                # TODO: Add interactive device selector?
-                sys.exit(-1)
+            if comports:
+                if len(comports) > 1:
+                    print('Several FTDI devices detected - not sure which to target. Aborting.')
+                    # TODO: Add interactive device selector?
+                    button_state()
+                    return
 
-            for com in comports:
-                try:
-                    self.serial = serial.Serial(com, baudrate=115200, timeout=None, rtscts=True)
-                    print('Opened device at %s' % com)
-                except Exception as ex:
-                    print('Could not open device at %s' % com)
-                    print('Exception: %s' % ex)
-        else:
-            print('No RetroTINK devices found')
+                for com in comports:
+                    try:
+                        self.serial = serial.Serial(com, baudrate=115200, timeout=None, rtscts=True)
+                        print('Opened device at %s' % com)
+                    except Exception as ex:
+                        print('Could not open device at %s' % com)
+                        print('Exception: %s' % ex)
+                        button_state()
+                        return
+            else:
+                print('No RetroTINK devices found')
+                button_state()
+                return
+        except:
+            print('No communication with device')
+            button_state()
+            return
+
 
         if self.serial:
             self.rx_process_thread = threading.Thread(target=self.rx, args=())
@@ -272,29 +314,92 @@ class Tink:
             self.timer_thread.daemon = True
             self.timer_thread.start()
         else:
-            sys.exit(-1)
+            button_state()
+            return
 
         self.running = True
 
-        retries=1
+        retries = 1
         self.bl_state = self.blfsm['BlVersion']
         while retries and running:
             retries = retries - 1
             print('Probing device... ', end='')
             self.tx_packet(self.cmd['CmdGetVer'])
             time.sleep(1)
+            # Need to add a timeout
+
+def file_select():
+    filetypes = (
+        ('hex files', '*.hex'),
+        ('All files', '*.*')
+    )
+
+    fw_filename = fd.askopenfilename(
+        title='Select hex',
+        initialdir='/',
+        filetypes=filetypes)
+
+    browse_box.configure(state="normal")
+    browse_box.delete(0, END)
+    browse_box.insert(0,fw_filename)
+    browse_box.configure(state="readonly")
+
+def tink_flash():
+    fw_filename = browse_box.get()
+    try:
+        button_state()
+        tink = Tink(fw_name=fw_filename, port=COM_OVERRIDE)
+    except:
+        print('Could not execute flash')
+        button_state()
+        return
+
+def button_state():
+    if browse_button['state'] == "normal":
+        browse_button.configure(state="disabled")
+        flash_button.configure(state="disabled")
+    else:
+        browse_button.configure(state="normal")
+        flash_button.configure(state="normal")
 
 if __name__ == '__main__':
     signal(SIGINT, sig_handler)
 
-    if len(sys.argv) != 2:
-        print('Usage: %s firmware.hex' % (sys.argv[0]))
-        sys.exit(-1)
+    window = tkinter.Tk()
+    window.geometry('680x380')
+    window.iconbitmap(default='./assets/icon.ico')
+    window.title('tinkup-gui')
+    window.resizable(False,False)
+    window.eval('tk::PlaceWindow . center')
+    
+    tink_logo = PhotoImage(file='./assets/RetroTINK-logo.png')
+    tink_logo = tink_logo.subsample(4,4)
+    tink_label = tkinter.Label(window,image=tink_logo)
+    tink_label.place(x=285, y=10)
 
-    tink = Tink(fw_name=sys.argv[1], port=COM_OVERRIDE)
+    fw_label = tkinter.Label(window,text="Hex File:")
+    fw_label.place(x=325, y=90)
 
-    while tink.running and running:
-        time.sleep(0.1)
+    browse_box = tkinter.Entry(window,textvariable=fw_filename)
+    browse_box.configure(state="readonly")
+    browse_box.place(x=10, y=120, width=582)
+    browse_button = tkinter.Button(window,text='Load HEX',command=file_select)
+    browse_button.place(x=610, y=115)
+    
+    flash_button = tkinter.Button(window, text="Flash", command=tink_flash)
+    flash_button.place(x=330, y=145)
+
+    print_text = sd.ScrolledText(window, undo=True)
+    print_text.place(x=10, y=180, height=180)
+    logger = PrintLogger(print_text)
+    sys.stdout = logger
+
+    
+
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)
+    finally:
+        window.mainloop()
 
     on_closing()
-
