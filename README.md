@@ -75,10 +75,7 @@ a new USB serial device to be detected by your OS.
    correct button on the RetroTINK to put it in update mode. Details about this
 procedure can be seen on [YouTube](https://www.youtube.com/watch?v=Bva0JXLoq7E).
 
-3. Run tinkup.py with a path to your firmware hex file specified as the only
-argument:
-
-`python3 tinkup.py firmware.hex`
+3. Run tinkup.py 
 
 As with the pySerial installation, if your system has installed Python 3 simply
 named `python`, use that instead of `python3`.
